@@ -669,3 +669,6 @@ impl eframe::App for MowerHUD {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

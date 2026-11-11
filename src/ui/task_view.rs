@@ -112,9 +112,11 @@ pub fn show(app: &mut MowerHUD, ui: &mut egui::Ui) -> egui::Vec2 {
             let bg = ui.interact(
                 ui.max_rect(),
                 ui.id().with("hud_drag_area"),
-                egui::Sense::drag(),
+                egui::Sense::click_and_drag(),
             );
-            if bg.dragged() {
+            // 普通点击不能进入系统模态拖窗；确认是左键拖动时只启动一次。
+            // drag_started_by 同时检查按键仍按下，避免松手后补发过期请求。
+            if bg.drag_started_by(egui::PointerButton::Primary) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
             bg.context_menu(|ui| context_menu(ui, &ctx, app));
