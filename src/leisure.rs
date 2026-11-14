@@ -84,6 +84,11 @@ impl LeisureState {
         }
         self.previous = Some(status);
         let Some(seconds) = remaining.filter(|seconds| *seconds > 0) else {
+            // 新一轮休眠的任务队列可能稍后才更新；尚未开启空档时保留资格。
+            // 已开启的空档仍须在到期或任务消失时结束，不能把它重新开启。
+            if !self.active {
+                return None;
+            }
             let alert = self.active.then_some(if remaining.is_some() {
                 Alert::Due
             } else {
@@ -232,5 +237,22 @@ mod tests {
             Some(Alert::Due)
         );
         assert!(!state.active);
+        assert_eq!(state.update(&cfg, Sleeping, true, Some(3600)), None);
+        assert!(!state.active);
+    }
+    #[test]
+    fn pending_sleep_window_survives_stale_or_missing_task() {
+        for transient in [Some(-60), Some(0), None] {
+            let cfg = settings();
+            let mut state = LeisureState::default();
+            state.update(&cfg, Working, true, Some(-60));
+            assert_eq!(state.update(&cfg, Sleeping, true, transient), None);
+            assert!(!state.active);
+            assert_eq!(
+                state.update(&cfg, Sleeping, true, Some(3600)),
+                Some(Alert::Available)
+            );
+            assert_eq!(state.update(&cfg, Sleeping, true, Some(3599)), None);
+        }
     }
 }

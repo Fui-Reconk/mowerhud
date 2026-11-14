@@ -228,3 +228,40 @@ fn leisure_popup_settings_button_remains_clickable() {
     }
     assert!(matches!(app.state, AppState::Configuration));
 }
+
+#[test]
+fn snapshot_lock_contention_preserves_active_leisure_window() {
+    for field in ["status", "error", "task"] {
+        let mut app = hud();
+        app.tick_leisure();
+        *app.mower_status.lock().unwrap() = MowerStatus::Sleeping;
+        app.tick_leisure();
+        assert!(app.leisure.active && app.leisure_popup);
+        let status = app.mower_status.clone();
+        let error = app.task_error.clone();
+        let task = app.task_info.clone();
+        let status_guard = (field == "status").then(|| status.lock().unwrap());
+        let error_guard = (field == "error").then(|| error.lock().unwrap());
+        let task_guard = (field == "task").then(|| task.lock().unwrap());
+        app.tick_leisure();
+        assert!(
+            app.leisure.active && app.leisure_popup,
+            "{field} lock contention must not change the window"
+        );
+        drop((status_guard, error_guard, task_guard));
+        app.tick_leisure();
+        assert!(app.leisure.active && app.leisure_popup);
+    }
+}
+
+#[test]
+fn readable_empty_queue_still_ends_active_leisure_window() {
+    let mut app = hud();
+    app.tick_leisure();
+    *app.mower_status.lock().unwrap() = MowerStatus::Sleeping;
+    app.tick_leisure();
+    assert!(app.leisure.active && app.leisure_popup);
+    *app.task_info.lock().unwrap() = None;
+    app.tick_leisure();
+    assert!(!app.leisure.active && !app.leisure_popup);
+}

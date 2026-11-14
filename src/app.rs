@@ -425,13 +425,20 @@ impl MowerHUD {
     }
 
     fn tick_leisure(&mut self) {
-        let status = self.current_status();
-        let online = self
-            .task_error
-            .try_lock()
-            .map(|error| error.is_none())
-            .unwrap_or(false);
-        let task = self.task_info.try_lock().ok().and_then(|task| task.clone());
+        // 与后台发布使用相同锁顺序，读取同一轮状态、错误和任务。
+        // 锁竞争只是暂时读不到，不代表离线、空队列或 Unknown；下一帧重试。
+        let (status, online, task) = {
+            let Ok(status) = self.mower_status.try_lock() else {
+                return;
+            };
+            let Ok(error) = self.task_error.try_lock() else {
+                return;
+            };
+            let Ok(task) = self.task_info.try_lock() else {
+                return;
+            };
+            (*status, error.is_none(), task.clone())
+        };
         let remaining = task.as_ref().map(|task| {
             task.current_time
                 .signed_duration_since(Local::now())
