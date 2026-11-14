@@ -85,8 +85,8 @@ pub struct MowerHUD {
     /// 隐身模式的系统托盘（仅 Windows，创建失败为 None）。持有以保活。
     #[cfg(windows)]
     tray: Option<crate::tray::Tray>,
-    /// 当前后台轮询任务句柄。重新启动时先 abort 上一个，避免多个 loop 抢写共享状态。
-    fetch_task: Option<tokio::task::JoinHandle<()>>,
+    /// 当前后台轮询句柄及其使用的配置，用于区分提醒修改和连接修改。
+    fetch_task: Option<(tokio::task::JoinHandle<()>, Config)>,
 }
 
 impl MowerHUD {
@@ -294,12 +294,16 @@ impl MowerHUD {
         }
     }
 
-    /// 启动后台任务轮询。先停掉上一轮，并清掉旧的任务/错误/状态，
-    /// 避免「改配置后重启」时新旧两个 loop 同时写共享状态导致 UI 闪烁。
+    /// 连接未变时沿用活跃轮询；更换连接或轮询已退出时才重启并清理状态。
     pub fn start_task_fetching(&mut self) {
+        if self.fetch_task.as_ref().is_some_and(|(handle, config)| {
+            !handle.is_finished() && config.same_connection(&self.config)
+        }) {
+            return;
+        }
         self.leisure = LeisureState::default();
         self.leisure_popup = false;
-        if let Some(handle) = self.fetch_task.take() {
+        if let Some((handle, _)) = self.fetch_task.take() {
             handle.abort();
         }
         // 换一组全新的共享句柄：abort 是协作式的，旧 loop 可能还有在途 HTTP 响应没返回，
@@ -314,9 +318,11 @@ impl MowerHUD {
         let task_error = self.task_error.clone();
         let mower_status = self.mower_status.clone();
         let config = self.config.clone();
-        self.fetch_task = Some(tokio::spawn(async move {
+        let fetch_config = config.clone();
+        let handle = tokio::spawn(async move {
             api::fetch_state_loop(task_info, task_error, mower_status, config).await;
-        }));
+        });
+        self.fetch_task = Some((handle, fetch_config));
     }
 
     /// 用临时字段测试 API 连接，结果写入 `connection_status`。
@@ -349,11 +355,15 @@ impl MowerHUD {
     pub fn save_and_start(&mut self) -> bool {
         match self.build_config_from_temp() {
             Ok(config) => {
-                self.config = config;
-                if let Err(e) = save_config(&self.config) {
+                if let Err(e) = save_config(&config) {
                     self.set_status(format!("保存配置失败: {}", e));
                     return false;
                 }
+                if self.config.leisure.enabled != config.leisure.enabled {
+                    self.leisure = LeisureState::default();
+                    self.leisure_popup = false;
+                }
+                self.config = config;
                 self.set_status("配置已保存".to_string());
                 true
             }
@@ -613,6 +623,14 @@ impl eframe::App for MowerHUD {
 
         let interval_ms = match self.state {
             AppState::Configuration => {
+                // 编辑设置不停止已启动的轮询和提醒，仍使用保存过的配置。
+                if self
+                    .fetch_task
+                    .as_ref()
+                    .is_some_and(|(handle, _)| !handle.is_finished())
+                {
+                    self.tick();
+                }
                 // 配置界面始终可见；尺寸按内容自适应，放在 ui() 里测量后设置。
                 self.set_window_visible(ctx, true);
                 // 配置界面也可拖动，需在此记忆位置：否则拖动后未进运行态就退出会丢失位置。

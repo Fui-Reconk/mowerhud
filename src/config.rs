@@ -97,6 +97,18 @@ impl Default for Config {
 }
 
 impl Config {
+    /// 只比较轮询使用的连接参数；提醒、显示与窗口设置不要求重连。
+    pub fn same_connection(&self, other: &Self) -> bool {
+        self.host == other.host
+            && self.port == other.port
+            && self.use_https == other.use_https
+            && self.username == other.username
+            && self.password == other.password
+            && self.token == other.token
+            && self.local_instance_id == other.local_instance_id
+            && self.local_hud_port == other.local_hud_port
+    }
+
     pub fn auto_connect_to_local(&self, first_start: bool) -> bool {
         self.local_instance_id.is_some()
             || first_start

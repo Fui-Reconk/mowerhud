@@ -265,3 +265,99 @@ fn readable_empty_queue_still_ends_active_leisure_window() {
     app.tick_leisure();
     assert!(!app.leisure.active && !app.leisure_popup);
 }
+
+fn start_sleep_window(app: &mut MowerHUD) {
+    let task = app.task_info.lock().unwrap().clone();
+    app.start_task_fetching();
+    *app.task_info.lock().unwrap() = task;
+    *app.mower_status.lock().unwrap() = MowerStatus::Working;
+    app.tick_leisure();
+    *app.mower_status.lock().unwrap() = MowerStatus::Sleeping;
+    app.tick_leisure();
+    assert!(app.leisure.active && app.leisure_popup);
+}
+
+#[tokio::test]
+async fn reminder_only_changes_keep_polling_and_current_sleep_window() {
+    let mut app = hud();
+    start_sleep_window(&mut app);
+    let tasks = app.task_info.clone();
+    app.config.sound_enabled = true;
+    app.config.leisure.warning_minutes = 7;
+    app.start_task_fetching();
+    assert!(
+        app.leisure.active && app.leisure_popup,
+        "saving reminders must not discard the sleep window"
+    );
+    assert!(
+        Arc::ptr_eq(&tasks, &app.task_info),
+        "unchanged connection must keep its poller"
+    );
+    app.config.sound_enabled = false;
+    app.task_info.lock().unwrap().as_mut().unwrap().current_time =
+        Local::now() + chrono::Duration::minutes(6);
+    app.tick_leisure();
+    assert!(app.leisure.active);
+    assert_eq!(
+        app.leisure
+            .update(&app.config.leisure, MowerStatus::Sleeping, true, Some(360)),
+        None,
+        "saved warning threshold must still fire once in this window"
+    );
+    app.task_info.lock().unwrap().as_mut().unwrap().current_time =
+        Local::now() - chrono::Duration::seconds(1);
+    app.tick_leisure();
+    assert!(!app.leisure.active && !app.leisure_popup);
+}
+
+#[tokio::test]
+async fn changing_connection_still_resets_current_sleep_window() {
+    let changes: [fn(&mut Config); 8] = [
+        |c| c.host = "192.0.2.1".into(),
+        |c| c.port += 1,
+        |c| c.use_https = true,
+        |c| c.username = Some("other-user".into()),
+        |c| c.password = Some("other-password".into()),
+        |c| c.token = Some("other-token".into()),
+        |c| c.local_instance_id = Some("other-instance".into()),
+        |c| c.local_hud_port = Some(58001),
+    ];
+    for change in changes {
+        let mut app = hud();
+        start_sleep_window(&mut app);
+        let tasks = app.task_info.clone();
+        change(&mut app.config);
+        app.start_task_fetching();
+        assert!(!app.leisure.active && !app.leisure_popup);
+        assert!(!Arc::ptr_eq(&tasks, &app.task_info));
+    }
+}
+
+#[tokio::test]
+async fn settings_page_continues_warning_and_deadline_processing() {
+    use eframe::App;
+    let mut app = hud();
+    start_sleep_window(&mut app);
+    app.state = AppState::Configuration;
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.task_info.lock().unwrap().as_mut().unwrap().current_time =
+        Local::now() + chrono::Duration::minutes(2);
+    app.last_update = Instant::now() - Duration::from_secs(2);
+    app.logic(&ctx, &mut frame);
+    assert_eq!(
+        app.leisure
+            .update(&app.config.leisure, MowerStatus::Sleeping, true, Some(120)),
+        None,
+        "settings page must already have processed the warning"
+    );
+    app.task_info.lock().unwrap().as_mut().unwrap().current_time =
+        Local::now() - chrono::Duration::seconds(1);
+    app.last_update = Instant::now() - Duration::from_secs(2);
+    app.logic(&ctx, &mut frame);
+    assert!(
+        !app.leisure.active && !app.leisure_popup,
+        "deadline must be processed without leaving settings"
+    );
+    assert!(matches!(app.state, AppState::Configuration));
+}
